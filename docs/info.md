@@ -1,20 +1,10 @@
-<!---
-
-This file is used to generate your project datasheet. Please fill in the information below and delete any unused
-sections.
-
-You can also include images in this folder and reference them in the markdown. Each image must be less than
-512 kb in size, and the combined size of all images must be less than 1 MB.
--->
-
 ## How it works
 
-Explain how your project works
+This is an ultra-low-area Event-Driven Sensor Sentinel. It combines a streaming median and MAD (Median Absolute Deviation) tracker with a Temporal Persistence Engine to distinguish between transient outliers and persistent baseline shifts. It operates entirely without memory buffers, tracking DC offset, noise width, and innovation correlation simultaneously.
 
 ## How to test
 
-Explain how to use your project
-
-## External hardware
-
-List external hardware used in your project (e.g. PMOD, LED display, etc), if any
+Apply an 8-bit signal to the input pins (`ui_in`). 
+- A flat signal will output a `000` event code on `uio_out[2:0]`. 
+- Injecting a massive 1-cycle spike will output a `001` (Hold/Glitch) interrupt code. 
+- Injecting a permanent shift in the baseline will output a `010` (Shift) interrupt code, causing the internal tracker to enter COARSE mode.
