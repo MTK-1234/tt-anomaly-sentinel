@@ -7,7 +7,7 @@ async def test_sentinel(dut):
     dut._log.info("Starting Anomaly Sentinel Silicon Test")
 
     # Set up the clock (50 MHz)
-    clock = Clock(dut.clk, 20, units="ns")
+    clock = Clock(dut.clk, 20, unit="ns")
     cocotb.start_soon(clock.start())
 
     # Initialize pins
@@ -29,7 +29,8 @@ async def test_sentinel(dut):
         dut.ui_in.value = 128
         await RisingEdge(dut.clk)
     
-    event_code = dut.uio_out.value & 0x07
+    # Cast LogicArray to integer before checking the bits
+    event_code = int(dut.uio_out.value) & 0x07
     dut._log.info(f"Event Code is: {bin(event_code)} (Expected 000: Sleep)")
 
     # ----------------------------------------------------
@@ -43,7 +44,7 @@ async def test_sentinel(dut):
     dut.ui_in.value = 128
     await ClockCycles(dut.clk, 3)
 
-    event_code = dut.uio_out.value & 0x07
+    event_code = int(dut.uio_out.value) & 0x07
     dut._log.info(f"Event Code is: {bin(event_code)} (Expected 001: Glitch Alarm)")
 
     # ----------------------------------------------------
@@ -54,7 +55,7 @@ async def test_sentinel(dut):
         dut.ui_in.value = 200
         await RisingEdge(dut.clk)
 
-    event_code = dut.uio_out.value & 0x07
+    event_code = int(dut.uio_out.value) & 0x07
     dut._log.info(f"Event Code is: {bin(event_code)} (Expected 010: Shift Alarm)")
 
     dut._log.info("Silicon Test Passed! Sentinel hardware is functioning.")
