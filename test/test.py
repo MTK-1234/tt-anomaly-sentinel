@@ -1,6 +1,6 @@
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, ClockCycles, Timer
+from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
 
 
 # ── Helper Utilities ──────────────────────────────────────────────
@@ -14,7 +14,16 @@ async def reset_dut(dut):
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value  = 1     # release reset
     await ClockCycles(dut.clk, 2)
-    await Timer(1, unit="ns")  # let NBA settle after last edge
+    await FallingEdge(dut.clk)  # let GL gate delays settle
+
+
+async def settle(dut):
+    """Wait for outputs to stabilise after a rising edge.
+    In gate-level simulation with UNIT_DELAY=#1, every standard cell
+    adds 1 ns of propagation delay.  The combinational path from a
+    flip-flop to the pad can be 5-8 gates deep (~8 ns).
+    FallingEdge is 10 ns after the rising edge — safe for any depth."""
+    await FallingEdge(dut.clk)
 
 
 def read_event_code(dut):
@@ -75,7 +84,7 @@ async def test_normal_flat_signal(dut):
         dut.ui_in.value = 128
         await RisingEdge(dut.clk)
 
-    await Timer(1, unit="ns")  # let NBA settle
+    await settle(dut)
 
     event    = read_event_code(dut)
     fsm      = read_fsm_state(dut)
@@ -105,16 +114,16 @@ async def test_transient_glitch(dut):
         await RisingEdge(dut.clk)
 
     # Phase 2 — Inject single spike
+    #   Edge A: spike sampled → NBA: state<=HOLD, event<=000 (old FINE)
     dut.ui_in.value = 255
     await RisingEdge(dut.clk)
-    # After this edge (NBA): state=HOLD, event_code=000 (reads old FINE)
 
     # Phase 3 — Return to normal
-    # Event classifier has 1-cycle pipeline delay: it reads PREVIOUS state.
-    # This edge sees old state=HOLD → event_code<=001 (Glitch).
+    #   Edge B: return sampled → NBA: state<=FINE, event<=001 (old HOLD)
+    #   We read after FallingEdge (10 ns later) so all GL gates settle.
     dut.ui_in.value = 128
     await RisingEdge(dut.clk)
-    await Timer(1, unit="ns")  # ← CRITICAL: let NBA settle before reading
+    await settle(dut)
 
     event = read_event_code(dut)
     dut._log.info(f"  1 cycle after spike: event={bin(event)} (expect 001)")
@@ -123,7 +132,7 @@ async def test_transient_glitch(dut):
     # Phase 4 — Verify the glitch clears within a few cycles
     for _ in range(5):
         await RisingEdge(dut.clk)
-    await Timer(1, unit="ns")
+    await settle(dut)
 
     event = read_event_code(dut)
     dut._log.info(f"  After settling: event={bin(event)} (expect 000)")
@@ -153,7 +162,7 @@ async def test_permanent_shift(dut):
     for _ in range(100):
         dut.ui_in.value = 200
         await RisingEdge(dut.clk)
-        await Timer(1, unit="ns")
+        await settle(dut)
         event = read_event_code(dut)
         if event != 0b000:
             alarm_seen = True
@@ -188,7 +197,7 @@ async def test_baseline_does_not_wrap(dut):
     for _ in range(150):
         dut.ui_in.value = 0
         await RisingEdge(dut.clk)
-    await Timer(1, unit="ns")
+    await settle(dut)
 
     baseline = read_baseline(dut)
     dut._log.info(f"  Driving to 0 → baseline={baseline}")
@@ -200,7 +209,7 @@ async def test_baseline_does_not_wrap(dut):
     for _ in range(150):
         dut.ui_in.value = 255
         await RisingEdge(dut.clk)
-    await Timer(1, unit="ns")
+    await settle(dut)
 
     baseline = read_baseline(dut)
     dut._log.info(f"  Driving to 255 → baseline={baseline}")
@@ -223,7 +232,7 @@ async def test_wake_interrupt(dut):
     for _ in range(20):
         dut.ui_in.value = 128
         await RisingEdge(dut.clk)
-    await Timer(1, unit="ns")
+    await settle(dut)
 
     wake  = read_wake(dut)
     event = read_event_code(dut)
@@ -231,11 +240,14 @@ async def test_wake_interrupt(dut):
     assert wake == 0, f"wake should be 0 when Normal, got wake={wake} event={bin(event)}"
 
     # Phase 2 — Trigger a glitch, wake must go high
+    #   Edge A: spike sampled → state<=HOLD, event<=000
     dut.ui_in.value = 255
-    await RisingEdge(dut.clk)          # spike sampled → state<=HOLD, event<=000
+    await RisingEdge(dut.clk)
+
+    #   Edge B: return  → state<=FINE,  event<=001 (reads old HOLD)
     dut.ui_in.value = 128
-    await RisingEdge(dut.clk)          # return → state<=FINE, event<=001 (reads old HOLD)
-    await Timer(1, unit="ns")          # ← let NBA settle
+    await RisingEdge(dut.clk)
+    await settle(dut)          # ← wait for GL gate delays
 
     wake  = read_wake(dut)
     event = read_event_code(dut)
@@ -245,7 +257,7 @@ async def test_wake_interrupt(dut):
     # Phase 3 — Settle back, wake must return low
     for _ in range(10):
         await RisingEdge(dut.clk)
-    await Timer(1, unit="ns")
+    await settle(dut)
 
     wake  = read_wake(dut)
     event = read_event_code(dut)
