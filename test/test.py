@@ -20,9 +20,8 @@ async def reset_dut(dut):
 async def settle(dut):
     """Wait for outputs to stabilise after a rising edge.
     In gate-level simulation with UNIT_DELAY=#1, every standard cell
-    adds 1 ns of propagation delay.  The combinational path from a
-    flip-flop to the pad can be 5-8 gates deep (~8 ns).
-    FallingEdge is 10 ns after the rising edge — safe for any depth."""
+    adds 1 ns of propagation delay.  FallingEdge is 10 ns after the
+    rising edge — safe for any combinational depth in this design."""
     await FallingEdge(dut.clk)
 
 
@@ -45,6 +44,10 @@ def read_wake(dut):
     """Read wake_cpu_int from uio_out[3]."""
     return (int(dut.uio_out.value) >> 3) & 0x01
 
+
+# ══════════════════════════════════════════════════════════════════
+# CORE TESTS (Blocks 1-5)
+# ══════════════════════════════════════════════════════════════════
 
 # ── Test 1: Reset Values ─────────────────────────────────────────
 
@@ -70,18 +73,19 @@ async def test_reset_values(dut):
     dut._log.info("  PASS")
 
 
-# ── Test 2: Normal Flat Signal ────────────────────────────────────
+# ── Test 2: Normal Noisy Signal ──────────────────────────────────
 
 @cocotb.test()
-async def test_normal_flat_signal(dut):
-    """50 cycles of constant input=128 must stay Normal with no alarm."""
-    dut._log.info("TEST 2: Normal Flat Signal (128 for 50 cycles)")
+async def test_normal_noisy_signal(dut):
+    """50 cycles of ±1 noise around 128 must stay Normal with no alarm.
+    Uses alternating 127/128 to avoid triggering the stuck-sensor detector."""
+    dut._log.info("TEST 2: Normal Noisy Signal (±1 around 128, 50 cycles)")
     clock = Clock(dut.clk, 20, unit="ns")
     cocotb.start_soon(clock.start())
     await reset_dut(dut)
 
-    for _ in range(50):
-        dut.ui_in.value = 128
+    for i in range(50):
+        dut.ui_in.value = 127 + (i % 2)   # alternates 127, 128
         await RisingEdge(dut.clk)
 
     await settle(dut)
@@ -92,9 +96,9 @@ async def test_normal_flat_signal(dut):
 
     dut._log.info(f"  baseline={baseline} event={bin(event)} fsm={bin(fsm)}")
 
-    assert event == 0b000, f"Flat signal must be Normal (000), got {bin(event)}"
-    assert fsm   == 0b00,  f"Flat signal must stay FINE (00), got {bin(fsm)}"
-    assert baseline == 128, f"Baseline must stay 128 on flat input, got {baseline}"
+    assert event == 0b000,          f"Noisy signal must be Normal (000), got {bin(event)}"
+    assert fsm   == 0b00,           f"Noisy signal must stay FINE (00), got {bin(fsm)}"
+    assert 126 <= baseline <= 129,  f"Baseline should be near 128, got {baseline}"
     dut._log.info("  PASS")
 
 
@@ -108,19 +112,16 @@ async def test_transient_glitch(dut):
     cocotb.start_soon(clock.start())
     await reset_dut(dut)
 
-    # Phase 1 — Settle at 128
-    for _ in range(20):
-        dut.ui_in.value = 128
+    # Phase 1 — Settle with ±1 noise (avoids stuck alarm)
+    for i in range(20):
+        dut.ui_in.value = 127 + (i % 2)
         await RisingEdge(dut.clk)
 
     # Phase 2 — Inject single spike
-    #   Edge A: spike sampled → NBA: state<=HOLD, event<=000 (old FINE)
     dut.ui_in.value = 255
     await RisingEdge(dut.clk)
 
-    # Phase 3 — Return to normal
-    #   Edge B: return sampled → NBA: state<=FINE, event<=001 (old HOLD)
-    #   We read after FallingEdge (10 ns later) so all GL gates settle.
+    # Phase 3 — Return to normal and read after 1-cycle event pipeline
     dut.ui_in.value = 128
     await RisingEdge(dut.clk)
     await settle(dut)
@@ -129,8 +130,9 @@ async def test_transient_glitch(dut):
     dut._log.info(f"  1 cycle after spike: event={bin(event)} (expect 001)")
     assert event == 0b001, f"Single spike should trigger Glitch (001), got {bin(event)}"
 
-    # Phase 4 — Verify the glitch clears within a few cycles
-    for _ in range(5):
+    # Phase 4 — Verify the glitch clears (use noise to avoid stuck alarm)
+    for i in range(5):
+        dut.ui_in.value = 127 + (i % 2)
         await RisingEdge(dut.clk)
     await settle(dut)
 
@@ -144,19 +146,19 @@ async def test_transient_glitch(dut):
 
 @cocotb.test()
 async def test_permanent_shift(dut):
-    """A sustained jump from 128→200 must raise an alarm and the
-       baseline must converge near the new value."""
+    """A sustained jump from ~128→200 must raise an alarm and
+       the baseline must converge near the new value."""
     dut._log.info("TEST 4: Permanent Baseline Shift (128 → 200)")
     clock = Clock(dut.clk, 20, unit="ns")
     cocotb.start_soon(clock.start())
     await reset_dut(dut)
 
-    # Phase 1 — Settle at 128
-    for _ in range(20):
-        dut.ui_in.value = 128
+    # Phase 1 — Settle with noise
+    for i in range(20):
+        dut.ui_in.value = 127 + (i % 2)
         await RisingEdge(dut.clk)
 
-    # Phase 2 — Shift to 200 and verify an alarm fires
+    # Phase 2 — Shift to 200 and verify alarm fires
     alarm_seen = False
     shift_seen = False
     for _ in range(100):
@@ -175,9 +177,6 @@ async def test_permanent_shift(dut):
 
     assert alarm_seen, "Expected at least one alarm during a baseline shift"
     assert shift_seen, "Expected Shift alarm (010) during sustained offset"
-
-    # Phase 3 — Verify baseline convergence (within ±8 of target, the
-    #            COARSE step size, is the design's convergence bound)
     assert abs(baseline - 200) <= 8, \
         f"Baseline should converge within ±8 of 200, got {baseline}"
     dut._log.info("  PASS")
@@ -228,9 +227,9 @@ async def test_wake_interrupt(dut):
     cocotb.start_soon(clock.start())
     await reset_dut(dut)
 
-    # Phase 1 — Normal: wake must be low
-    for _ in range(20):
-        dut.ui_in.value = 128
+    # Phase 1 — Normal (use noise to avoid stuck alarm): wake must be low
+    for i in range(20):
+        dut.ui_in.value = 127 + (i % 2)
         await RisingEdge(dut.clk)
     await settle(dut)
 
@@ -239,23 +238,21 @@ async def test_wake_interrupt(dut):
     dut._log.info(f"  Normal: wake={wake} event={bin(event)}")
     assert wake == 0, f"wake should be 0 when Normal, got wake={wake} event={bin(event)}"
 
-    # Phase 2 — Trigger a glitch, wake must go high
-    #   Edge A: spike sampled → state<=HOLD, event<=000
+    # Phase 2 — Trigger a glitch: wake must go high
     dut.ui_in.value = 255
     await RisingEdge(dut.clk)
-
-    #   Edge B: return  → state<=FINE,  event<=001 (reads old HOLD)
     dut.ui_in.value = 128
     await RisingEdge(dut.clk)
-    await settle(dut)          # ← wait for GL gate delays
+    await settle(dut)
 
     wake  = read_wake(dut)
     event = read_event_code(dut)
     dut._log.info(f"  Alarm: wake={wake} event={bin(event)}")
     assert wake == 1, f"wake should be 1 during alarm, got wake={wake} event={bin(event)}"
 
-    # Phase 3 — Settle back, wake must return low
-    for _ in range(10):
+    # Phase 3 — Settle back with noise: wake must return low
+    for i in range(10):
+        dut.ui_in.value = 127 + (i % 2)
         await RisingEdge(dut.clk)
     await settle(dut)
 
@@ -263,4 +260,105 @@ async def test_wake_interrupt(dut):
     event = read_event_code(dut)
     dut._log.info(f"  Settled: wake={wake} event={bin(event)}")
     assert wake == 0, f"wake should return to 0 after alarm clears, got wake={wake}"
+    dut._log.info("  PASS")
+
+
+# ══════════════════════════════════════════════════════════════════
+# ENHANCEMENT TESTS (Blocks 6-8)
+# ══════════════════════════════════════════════════════════════════
+
+# ── Test 7: Slow Drift Detection (Momentum Engine) ───────────────
+
+@cocotb.test()
+async def test_slow_drift(dut):
+    """A steadily increasing input should trigger Drift Warning (110)
+       when the momentum engine is enabled."""
+    dut._log.info("TEST 7: Slow Drift Detection (momentum ON)")
+    clock = Clock(dut.clk, 20, unit="ns")
+    cocotb.start_soon(clock.start())
+    await reset_dut(dut)
+
+    # Enable momentum engine: uio_in[7] = 1
+    dut.uio_in.value = 0x80
+
+    # Ramp the input: 128, 129, 130, ... 167  (40 steps)
+    drift_seen = False
+    for i in range(40):
+        dut.ui_in.value = min(255, 128 + i)
+        await RisingEdge(dut.clk)
+        await settle(dut)
+        event = read_event_code(dut)
+        if event == 0b110:
+            drift_seen = True
+
+    dut._log.info(f"  drift_seen={drift_seen}")
+    assert drift_seen, "Expected Drift Warning (110) during steady ramp with momentum ON"
+    dut._log.info("  PASS")
+
+
+# ── Test 8: Stuck Sensor Detection ────────────────────────────────
+
+@cocotb.test()
+async def test_stuck_sensor(dut):
+    """16+ consecutive identical samples must trigger Stuck Sensor (111)."""
+    dut._log.info("TEST 8: Stuck Sensor Detection")
+    clock = Clock(dut.clk, 20, unit="ns")
+    cocotb.start_soon(clock.start())
+    await reset_dut(dut)
+
+    # Phase 1 — Settle with noise so stuck_ctr stays at 0
+    for i in range(20):
+        dut.ui_in.value = 127 + (i % 2)
+        await RisingEdge(dut.clk)
+
+    # Phase 2 — Feed constant 128 for 25 cycles (exceeds 16-cycle threshold)
+    for _ in range(25):
+        dut.ui_in.value = 128
+        await RisingEdge(dut.clk)
+    await settle(dut)
+
+    event = read_event_code(dut)
+    dut._log.info(f"  After 25 constant cycles: event={bin(event)} (expect 111: Stuck)")
+    assert event == 0b111, f"Expected Stuck Sensor (111), got {bin(event)}"
+
+    # Phase 3 — Verify self-healing: one different sample should clear it
+    dut.ui_in.value = 130
+    await RisingEdge(dut.clk)
+    # After this edge: stuck_ctr resets. Next cycle event clears.
+    dut.ui_in.value = 130
+    await RisingEdge(dut.clk)
+    await settle(dut)
+
+    event = read_event_code(dut)
+    dut._log.info(f"  After signal change: event={bin(event)} (expect not 111)")
+    assert event != 0b111, f"Stuck alarm should clear after signal change, got {bin(event)}"
+    dut._log.info("  PASS")
+
+
+# ── Test 9: Momentum Disabled ────────────────────────────────────
+
+@cocotb.test()
+async def test_momentum_disable(dut):
+    """With cfg_momentum_en=0, the Drift Warning must NOT fire
+       even during a steady ramp."""
+    dut._log.info("TEST 9: Momentum Disabled (drift must not fire)")
+    clock = Clock(dut.clk, 20, unit="ns")
+    cocotb.start_soon(clock.start())
+    await reset_dut(dut)
+
+    # Momentum explicitly disabled (default)
+    dut.uio_in.value = 0x00
+
+    # Same ramp as test_slow_drift
+    drift_seen = False
+    for i in range(40):
+        dut.ui_in.value = min(255, 128 + i)
+        await RisingEdge(dut.clk)
+        await settle(dut)
+        event = read_event_code(dut)
+        if event == 0b110:
+            drift_seen = True
+
+    dut._log.info(f"  drift_seen={drift_seen} (expect False)")
+    assert not drift_seen, "Drift Warning should NOT fire when momentum is disabled"
     dut._log.info("  PASS")
