@@ -2,60 +2,238 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, ClockCycles
 
+
+# ── Helper Utilities ──────────────────────────────────────────────
+
+async def reset_dut(dut):
+    """Apply a clean hardware reset and release. All inputs set to defaults."""
+    dut.ena.value   = 1
+    dut.ui_in.value = 128   # mid-scale default
+    dut.uio_in.value = 0    # both config bits low
+    dut.rst_n.value = 0     # assert reset
+    await ClockCycles(dut.clk, 10)
+    dut.rst_n.value = 1     # release reset
+    await ClockCycles(dut.clk, 2)
+
+
+def read_event_code(dut):
+    """Read event_code[2:0] from uio_out."""
+    return int(dut.uio_out.value) & 0x07
+
+
+def read_fsm_state(dut):
+    """Read debug_fsm[1:0] from uio_out[5:4]."""
+    return (int(dut.uio_out.value) >> 4) & 0x03
+
+
+def read_baseline(dut):
+    """Read baseline_out from uo_out."""
+    return int(dut.uo_out.value)
+
+
+def read_wake(dut):
+    """Read wake_cpu_int from uio_out[3]."""
+    return (int(dut.uio_out.value) >> 3) & 0x01
+
+
+# ── Test 1: Reset Values ─────────────────────────────────────────
+
 @cocotb.test()
-async def test_sentinel(dut):
-    dut._log.info("Starting Anomaly Sentinel Silicon Test")
-
-    # Set up the clock (50 MHz)
-    clock = Clock(dut.clk, 20, unit="ns")
+async def test_reset_values(dut):
+    """After reset, baseline=128, event=Normal, FSM=FINE, wake=0."""
+    dut._log.info("TEST 1: Reset Values")
+    clock = Clock(dut.clk, 20, units="ns")
     cocotb.start_soon(clock.start())
+    await reset_dut(dut)
 
-    # Initialize pins
-    dut.ena.value = 1
-    dut.ui_in.value = 128    # Start signal in the middle (128)
-    dut.uio_in.value = 0     # Set config pins to 0
-    dut.rst_n.value = 0      # Hold chip in reset
+    baseline = read_baseline(dut)
+    event    = read_event_code(dut)
+    fsm      = read_fsm_state(dut)
+    wake     = read_wake(dut)
 
-    # Reset the hardware
-    await ClockCycles(dut.clk, 10)
-    dut.rst_n.value = 1      # Release reset
-    await ClockCycles(dut.clk, 10)
+    dut._log.info(f"  baseline={baseline} event={bin(event)} fsm={bin(fsm)} wake={wake}")
 
-    # ----------------------------------------------------
-    # TEST 1: Normal Flat Signal (Baseline)
-    # ----------------------------------------------------
-    dut._log.info("Injecting normal signal (128)...")
-    for _ in range(15):
+    assert baseline == 128, f"baseline should be 128 after reset, got {baseline}"
+    assert event == 0b000,  f"event should be 000 (Normal) after reset, got {bin(event)}"
+    assert fsm   == 0b00,   f"FSM should be FINE (00) after reset, got {bin(fsm)}"
+    assert wake  == 0,       f"wake should be 0 after reset, got {wake}"
+    dut._log.info("  PASS")
+
+
+# ── Test 2: Normal Flat Signal ────────────────────────────────────
+
+@cocotb.test()
+async def test_normal_flat_signal(dut):
+    """50 cycles of constant input=128 must stay Normal with no alarm."""
+    dut._log.info("TEST 2: Normal Flat Signal (128 for 50 cycles)")
+    clock = Clock(dut.clk, 20, units="ns")
+    cocotb.start_soon(clock.start())
+    await reset_dut(dut)
+
+    for _ in range(50):
         dut.ui_in.value = 128
         await RisingEdge(dut.clk)
-    
-    # Cast LogicArray to integer before checking the bits
-    event_code = int(dut.uio_out.value) & 0x07
-    dut._log.info(f"Event Code is: {bin(event_code)} (Expected 000: Sleep)")
 
-    # ----------------------------------------------------
-    # TEST 2: Transient Noise Spike (Glitch)
-    # ----------------------------------------------------
-    dut._log.info("Injecting massive noise spike (255)...")
-    dut.ui_in.value = 255
-    await RisingEdge(dut.clk)
-    
-    # Return to normal immediately
-    dut.ui_in.value = 128
-    await ClockCycles(dut.clk, 3)
+    event    = read_event_code(dut)
+    fsm      = read_fsm_state(dut)
+    baseline = read_baseline(dut)
 
-    event_code = int(dut.uio_out.value) & 0x07
-    dut._log.info(f"Event Code is: {bin(event_code)} (Expected 001: Glitch Alarm)")
+    dut._log.info(f"  baseline={baseline} event={bin(event)} fsm={bin(fsm)}")
 
-    # ----------------------------------------------------
-    # TEST 3: Permanent Distribution Shift
-    # ----------------------------------------------------
-    dut._log.info("Injecting permanent baseline shift (200)...")
-    for _ in range(25):
-        dut.ui_in.value = 200
+    assert event == 0b000, f"Flat signal must be Normal (000), got {bin(event)}"
+    assert fsm   == 0b00,  f"Flat signal must stay FINE (00), got {bin(fsm)}"
+    assert baseline == 128, f"Baseline must stay 128 on flat input, got {baseline}"
+    dut._log.info("  PASS")
+
+
+# ── Test 3: Transient Glitch ─────────────────────────────────────
+
+@cocotb.test()
+async def test_transient_glitch(dut):
+    """A single-cycle spike to 255 must trigger Glitch (001), then clear."""
+    dut._log.info("TEST 3: Transient Glitch (single spike to 255)")
+    clock = Clock(dut.clk, 20, units="ns")
+    cocotb.start_soon(clock.start())
+    await reset_dut(dut)
+
+    # Phase 1 — Settle at 128
+    for _ in range(20):
+        dut.ui_in.value = 128
         await RisingEdge(dut.clk)
 
-    event_code = int(dut.uio_out.value) & 0x07
-    dut._log.info(f"Event Code is: {bin(event_code)} (Expected 010: Shift Alarm)")
+    # Phase 2 — Inject single spike
+    dut.ui_in.value = 255
+    await RisingEdge(dut.clk)
 
-    dut._log.info("Silicon Test Passed! Sentinel hardware is functioning.")
+    # Phase 3 — Return to normal
+    # The event classifier has a 1-cycle pipeline delay (reads previous state).
+    # After the spike edge, FSM enters HOLD.  One more edge commits the new
+    # event_code that reflects the HOLD state → event_code = 001 (Glitch).
+    dut.ui_in.value = 128
+    await RisingEdge(dut.clk)
+
+    event = read_event_code(dut)
+    dut._log.info(f"  1 cycle after spike: event={bin(event)} (expect 001)")
+    assert event == 0b001, f"Single spike should trigger Glitch (001), got {bin(event)}"
+
+    # Phase 4 — Verify the glitch clears within a few cycles
+    await ClockCycles(dut.clk, 5)
+    event = read_event_code(dut)
+    dut._log.info(f"  After settling: event={bin(event)} (expect 000)")
+    assert event == 0b000, f"Glitch should clear to Normal (000), got {bin(event)}"
+    dut._log.info("  PASS")
+
+
+# ── Test 4: Permanent Baseline Shift ─────────────────────────────
+
+@cocotb.test()
+async def test_permanent_shift(dut):
+    """A sustained jump from 128→200 must raise an alarm and the
+       baseline must converge near the new value."""
+    dut._log.info("TEST 4: Permanent Baseline Shift (128 → 200)")
+    clock = Clock(dut.clk, 20, units="ns")
+    cocotb.start_soon(clock.start())
+    await reset_dut(dut)
+
+    # Phase 1 — Settle at 128
+    for _ in range(20):
+        dut.ui_in.value = 128
+        await RisingEdge(dut.clk)
+
+    # Phase 2 — Shift to 200 and verify an alarm fires
+    alarm_seen = False
+    shift_seen = False
+    for _ in range(100):
+        dut.ui_in.value = 200
+        await RisingEdge(dut.clk)
+        event = read_event_code(dut)
+        if event != 0b000:
+            alarm_seen = True
+        if event == 0b010:
+            shift_seen = True
+
+    baseline = read_baseline(dut)
+    dut._log.info(f"  After 100 cycles at 200: baseline={baseline}, "
+                  f"alarm_seen={alarm_seen}, shift_seen={shift_seen}")
+
+    assert alarm_seen, "Expected at least one alarm during a baseline shift"
+    assert shift_seen, "Expected Shift alarm (010) during sustained offset"
+
+    # Phase 3 — Verify baseline convergence (within ±8 of target, the
+    #            COARSE step size, is the design's convergence bound)
+    assert abs(baseline - 200) <= 8, \
+        f"Baseline should converge within ±8 of 200, got {baseline}"
+    dut._log.info("  PASS")
+
+
+# ── Test 5: Baseline Saturation (no wrap-around) ─────────────────
+
+@cocotb.test()
+async def test_baseline_does_not_wrap(dut):
+    """Driving raw_in to 0 and 255 must clamp baseline, never wrap."""
+    dut._log.info("TEST 5: Baseline Saturation (no wrap-around)")
+    clock = Clock(dut.clk, 20, units="ns")
+    cocotb.start_soon(clock.start())
+
+    # ── Part A: Drive toward 0 ──
+    await reset_dut(dut)
+    for _ in range(150):
+        dut.ui_in.value = 0
+        await RisingEdge(dut.clk)
+
+    baseline = read_baseline(dut)
+    dut._log.info(f"  Driving to 0 → baseline={baseline}")
+    assert baseline <= 10,  f"Baseline should be near 0, got {baseline}"
+    assert baseline < 128,  f"Baseline WRAPPED AROUND (>128)! got {baseline}"
+
+    # ── Part B: Drive toward 255 ──
+    await reset_dut(dut)
+    for _ in range(150):
+        dut.ui_in.value = 255
+        await RisingEdge(dut.clk)
+
+    baseline = read_baseline(dut)
+    dut._log.info(f"  Driving to 255 → baseline={baseline}")
+    assert baseline >= 245, f"Baseline should be near 255, got {baseline}"
+    assert baseline > 128,  f"Baseline WRAPPED AROUND (<128)! got {baseline}"
+    dut._log.info("  PASS")
+
+
+# ── Test 6: Wake Interrupt Logic ─────────────────────────────────
+
+@cocotb.test()
+async def test_wake_interrupt(dut):
+    """wake_cpu_int must be HIGH when event_code != 000, LOW otherwise."""
+    dut._log.info("TEST 6: Wake Interrupt Logic")
+    clock = Clock(dut.clk, 20, units="ns")
+    cocotb.start_soon(clock.start())
+    await reset_dut(dut)
+
+    # Phase 1 — Normal: wake must be low
+    for _ in range(20):
+        dut.ui_in.value = 128
+        await RisingEdge(dut.clk)
+
+    wake  = read_wake(dut)
+    event = read_event_code(dut)
+    dut._log.info(f"  Normal: wake={wake} event={bin(event)}")
+    assert wake == 0, f"wake should be 0 when Normal, got wake={wake} event={bin(event)}"
+
+    # Phase 2 — Trigger a glitch, wake must go high
+    dut.ui_in.value = 255
+    await RisingEdge(dut.clk)
+    dut.ui_in.value = 128
+    await RisingEdge(dut.clk)  # 1-cycle pipeline: event_code updates here
+
+    wake  = read_wake(dut)
+    event = read_event_code(dut)
+    dut._log.info(f"  Alarm: wake={wake} event={bin(event)}")
+    assert wake == 1, f"wake should be 1 during alarm, got wake={wake} event={bin(event)}"
+
+    # Phase 3 — Settle back, wake must return low
+    await ClockCycles(dut.clk, 10)
+    wake  = read_wake(dut)
+    event = read_event_code(dut)
+    dut._log.info(f"  Settled: wake={wake} event={bin(event)}")
+    assert wake == 0, f"wake should return to 0 after alarm clears, got wake={wake}"
+    dut._log.info("  PASS")
