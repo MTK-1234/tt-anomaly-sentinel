@@ -16,8 +16,8 @@ Apply an 8-bit signal to the input pins (ui_in). Set configuration pins uio_in[7
 
 The classification code is output on uio_out[2:0]:
 
-Normal signal: outputs 000.
-Inject a 1-cycle spike: outputs 001 (Glitch).
-Inject a permanent baseline jump: outputs 010 (Shift).
-Apply a slowly increasing ramp: outputs 110 (Drift).
-Hold the exact same value for 16 cycles: outputs 111 (Stuck Sensor).
+- Normal signal: outputs 000.
+- Inject a 1-cycle spike: outputs 001 (Glitch).
+- Inject a permanent baseline jump: outputs 010 (Shift).
+- Apply a slowly increasing ramp: outputs 110 (Drift).
+- Hold the exact same value for 16 cycles: outputs 111 (Stuck Sensor).
