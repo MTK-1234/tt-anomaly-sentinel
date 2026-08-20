@@ -1,22 +1,22 @@
 # Tiny Tapeout project information
 project:
-  title:        "TPE-MED Anomaly Sentinel"      
-  author:       "MTK-1234"      
+  title:        "Streaming Median-MAD Estimator"      
+  author:       "Mohammed Taheer, Jitesh.R, Shylashree N, RV College of Engineering"      
   discord:      ""      
-  description:  "Tri-Mode Streaming Median Tracker and Event Classifier"      
+  description:  "Zero-RAM statistical co-processor for outlier-resilient event classification."      
   language:     "Verilog" 
   clock_hz:     50000000       # 50 MHz is a good target
 
   # How many tiles your design occupies? A single tile is about 167x108 uM.
-  tiles: "1x1"          
-
+  tiles: "1x1"         
+ 
   # Your top module name must start with "tt_um_". Make it unique by including your github username:
   top_module:  "tt_um_MTK1234_anomaly_sentinel"
 
   # List your project's source files here.
   source_files:
     - "project.v"
-
+    
 # The pinout of your project. 
 pinout:
   # Inputs
