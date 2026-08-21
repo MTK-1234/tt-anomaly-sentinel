@@ -1,34 +1,41 @@
 ![](../../workflows/gds/badge.svg) ![](../../workflows/docs/badge.svg) ![](../../workflows/test/badge.svg) ![](../../workflows/fpga/badge.svg)
 
-# Tiny Tapeout Verilog Project Template
+# Streaming Median-MAD Estimator
 
-- [Read the documentation for project](docs/info.md)
+**Tiny Tapeout submission, SkyWater 130nm, TTSKY26c shuttle**
+
+- [Read the full project documentation](docs/info.md)
+
+## What is this?
+---
+
+This project is an ultra-low-area, zero-RAM statistical co-processor implemented in Verilog. The design tracks baseline and volatility to classify time-series anomalies like drift, glitches, and stuck sensors in real-time.
+
+The sentinel receives an 8-bit input data stream. It combines a streaming median and MAD (Median Absolute Deviation) tracker with a Temporal Persistence Engine. It operates entirely without memory buffers, utilizing continuous digital feedback loops to distinguish between transient outliers and persistent baseline shifts.
+
+**Research contribution:** This project demonstrates deterministic statistical analysis (Median and MAD) and complex event classification entirely without the use of RAM arrays, hardware multipliers, or dividers. This makes it exceptionally area and power efficient for Edge IoT sensors.
+
+## Design summary
+---
+
+- **Top module:** `tt_um_MTK1234_anomaly_sentinel`
+- **Real device count:** ~600 standard cells (post-LVS, SkyWater 130nm sky130_fd_sc_hd)
+- **Clock:** 50 MHz (20ns period)
+- **Verified:** DRC, LVS, and Antenna checks clean via LibreLane and Tiny Tapeout CI pipeline
+- **Verification:** cocotb regression covering configuration, baseline saturation, transient glitches, baseline shifts, momentum drift, and stuck-sensor hardware faults
 
 ## What is Tiny Tapeout?
+---
 
 Tiny Tapeout is an educational project that aims to make it easier and cheaper than ever to get your digital and analog designs manufactured on a real chip.
 
-To learn more and get started, visit https://tinytapeout.com.
-
-## Set up your Verilog project
-
-1. Add your Verilog files to the `src` folder.
-2. Edit the [info.yaml](info.yaml) and update information about your project, paying special attention to the `source_files` and `top_module` properties. If you are upgrading an existing Tiny Tapeout project, check out our [online info.yaml migration tool](https://tinytapeout.github.io/tt-yaml-upgrade-tool/).
-3. Edit [docs/info.md](docs/info.md) and add a description of your project.
-4. Adapt the testbench to your design. See [test/README.md](test/README.md) for more information.
-
-The GitHub action will automatically build the ASIC files using [LibreLane](https://www.zerotoasiccourse.com/terminology/librelane/).
-
-## Enable GitHub actions to build the results page
-
-- [Enabling GitHub Pages](https://tinytapeout.com/faq/#my-github-action-is-failing-on-the-pages-part)
+To learn more, visit https://tinytapeout.com.
 
 ## Resources
+---
 
 - [FAQ](https://tinytapeout.com/faq/)
 - [Digital design lessons](https://tinytapeout.com/digital_design/)
-- [Learn how semiconductors work](https://tinytapeout.com/siliwiz/)
-- [Join the community](https://tinytapeout.com/discord)
 - [Build your design locally](https://www.tinytapeout.com/guides/local-hardening/)
 
 ## What next?
